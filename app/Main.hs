@@ -8,6 +8,7 @@ import System.IO (hPutStrLn, stderr)
 import qualified Example.CompilerShake as CompilerShake
 import qualified Example.CompilerSimpleShake as CompilerSimpleShake
 import qualified Example.Spreadsheet as Spreadsheet
+import qualified Example.CompilerSimpleShakePar as CompilerSimpleShakePar
 
 -- Map of available examples
 examples :: Map.Map String (IO ())
@@ -15,6 +16,7 @@ examples = Map.fromList
   [ ("compiler-shake", CompilerShake.main)
   , ("compiler-simple-shake", CompilerSimpleShake.main)
   , ("spreadsheet", Spreadsheet.main)
+  , ("compiler-simpleshake-par", CompilerSimpleShakePar.main)
   ]
 
 -- Display usage information
@@ -23,6 +25,7 @@ usage = do
   hPutStrLn stderr "Usage: build-system EXAMPLE"
   hPutStrLn stderr "Available examples:"
   mapM_ (\name -> hPutStrLn stderr $ "  - " ++ name) (Map.keys examples)
+  hPutStrLn stderr "  compiler-simpleshake-par [threads]  - Compiler with parallel SimpleShake"
 
 -- Main function
 main :: IO ()
@@ -44,4 +47,5 @@ main = do
         Nothing -> do
           hPutStrLn stderr $ "Unknown example: " ++ exampleName
           usage
+
 

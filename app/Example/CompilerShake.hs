@@ -9,6 +9,7 @@ import Abstract.Compiler
 import System.Shake (Build, rule, build, printBuildStats, evalBuild)
 import Data.GADT.Compare
 import Data.Type.Equality
+import Abstract.Operations
 
 data RuleMatch o where
     MatchModule :: RuleMatch FilePath
@@ -34,15 +35,20 @@ keyToMatch ModuleGraphKey = MatchModuleGraph
 runExampleBuild :: IO ()
 runExampleBuild = evalBuild $ do
     -- Register rules
-    rule MatchModuleGraph (discoverModuleGraph buildWrapper)
-    rule MatchModule (compileModule buildWrapper)
+    rule MatchModuleGraph (discoverModuleGraph ops)
+    rule MatchModule (compileModule ops)
 
     -- Run the build process
-    exampleBuild buildWrapper
+    exampleBuild ops
 
     -- Print build statistics
     printBuildStats
   where
+    ops = Operations {
+          fetch = buildWrapper
+        , fetches = mapM buildWrapper
+      }
+
     buildWrapper :: forall a. Key a -> Build RuleMatch Key a
     buildWrapper k = do
       result <- build keyToMatch k
