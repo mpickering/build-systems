@@ -4,6 +4,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE RankNTypes #-}
 
 module SimpleBuildExample where
 
@@ -13,7 +14,8 @@ import Data.GADT.Compare
 import Control.Monad (forM_)
 import Data.Type.Equality
 import qualified Data.Map as Map
-import Build (Build(..), rule, build, printBuildStats)
+import Data.Functor.Classes
+import Data.GADT.Show
 
 type ModuleName = String
 
@@ -21,6 +23,13 @@ type ModuleName = String
 data Key a where
     ModuleKey :: ModuleName -> Key FilePath
     ModuleGraphKey :: Key [Module] -- Rule type for computing the module graph
+
+-- | GShow instance for Key to enable pretty printing
+instance GShow Key where
+    gshowsPrec p (ModuleKey name) = showParen (p > 10) $
+        showString "ModuleKey " . showsPrec 11 name
+    gshowsPrec p ModuleGraphKey = showString "ModuleGraphKey"
+
 
 instance GEq Key where
     geq (ModuleKey a) (ModuleKey b)
@@ -72,20 +81,18 @@ data Module = Module
     } deriving (Show, Eq)
 
 -- | Simulating a module compilation process
-compileModule :: Key String -> Build RuleMatch Key String
-compileModule (ModuleKey name) = do
-    liftIO $ putStrLn $ "Compiling module: " ++ name
-    Just modules <- build keyToString keyToMatch ModuleGraphKey
+compileModule :: (Monad m) => (forall x. Key x -> m x) -> Key String -> m String
+compileModule fetch (ModuleKey name) = do
+    modules <- fetch ModuleGraphKey
     case lookup name [(moduleName m, m) | m <- modules] of
         Just ms -> do
-            forM_ (dependencies ms) (\dep -> build keyToString keyToMatch (ModuleKey dep)) -- Query dependencies first
+            forM_ (dependencies ms) (\dep -> fetch (ModuleKey dep)) -- Query dependencies first
             return $ "Compiled: " ++ name
         Nothing -> error $ "Module " ++ name ++ " not found"
 
 -- | Rule for computing the module graph
-discoverModuleGraph :: Key [Module] -> Build RuleMatch Key [Module]
-discoverModuleGraph _ = do
-    liftIO $ putStrLn "Discovering module graph..."
+discoverModuleGraph :: (Monad m) => (forall x. Key x -> m x) -> Key [Module] -> m [Module]
+discoverModuleGraph _ _ = do
     let modules = [ Module "A" [] "print(\"Hello from A\")"
                   , Module "B" ["A"] "print(\"Hello from B\")"
                   , Module "C" ["A", "B"] "print(\"Hello from C\")"
@@ -100,43 +107,47 @@ discoverModuleGraph _ = do
     return modules
 
 -- | Print the module dependency tree
-printModuleTree :: [Module] -> Build RuleMatch Key ()
-printModuleTree modules = do
+printModuleTree :: (Monad m, MonadIO m) => (forall x. Key x -> m x) -> [Module] -> m ()
+printModuleTree fetch modules = do
     liftIO $ putStrLn "Module Dependency Tree:"
     -- Find the root modules (those that have no dependents)
     let rootModules = filter (\m -> moduleName m == "Root") modules
     forM_ rootModules $ \root ->
-        printModuleNode root modules 0
+        printModuleNode fetch root modules 0
 
 -- | Print a single module node and its dependencies recursively
-printModuleNode :: Module -> [Module] -> Int -> Build RuleMatch Key ()
-printModuleNode m allModules depth = do
+printModuleNode :: (Monad m, MonadIO m) => (forall x. Key x -> m x) -> Module -> [Module] -> Int -> m ()
+printModuleNode _ m allModules depth = do
     -- Print the current module with proper indentation
     liftIO $ putStrLn $ replicate (depth * 2) ' ' ++ "- " ++ moduleName m
 
     -- Print each dependency
     forM_ (dependencies m) $ \depName -> do
         case lookup depName [(moduleName m, m) | m <- allModules] of
-            Just depMod -> printModuleNode depMod allModules (depth + 1)
+            Just depMod -> printModuleNode (error "Not used") depMod allModules (depth + 1)
             Nothing -> liftIO $ putStrLn $ replicate ((depth + 1) * 2) ' ' ++ "- " ++ depName ++ " (missing)"
 
 -- | Example: Compiling a small program with dynamic dependencies
-exampleBuild :: Build RuleMatch Key ()
-exampleBuild = do
-    rule MatchModuleGraph discoverModuleGraph
-    rule MatchModule compileModule -- Parameterized rule for compiling any module
+exampleBuild :: (Monad m, MonadIO m)
+             => (forall x. RuleMatch x -> (Key x -> m x) -> m ())  -- Rule registration function
+             -> (forall x. Key x -> m x)                          -- Build function
+             -> (m ())                                            -- Stats printer
+             -> m ()
+exampleBuild registerRule build printStats = do
+    registerRule MatchModuleGraph (discoverModuleGraph build)
+    registerRule MatchModule (compileModule build) -- Parameterized rule for compiling any module
 
-    Just modules <- build keyToString keyToMatch ModuleGraphKey
+    modules <- build ModuleGraphKey
 
     -- Print the module dependency tree
-    printModuleTree modules
+    printModuleTree build modules
 
     -- Compile all modules
     forM_ modules $ \ms -> do
-        _ <- build keyToString keyToMatch (ModuleKey (moduleName ms))
+        _ <- build (ModuleKey (moduleName ms))
         return ()
 
     -- Print build statistics
-    printBuildStats
+    printStats
 
     return ()

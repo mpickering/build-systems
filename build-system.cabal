@@ -14,6 +14,6 @@ executable build-system
     import:           warnings
     main-is:          Main.hs
     build-depends:    base >=4.20.0.0, dependent-map, some, dependent-sum, mtl, containers,
-    other-modules:    SimpleBuildExample, Build
+    other-modules:    SimpleBuildExample, SpreadsheetExample, Build, RunBuildExample
     hs-source-dirs:   app
     default-language: Haskell2010

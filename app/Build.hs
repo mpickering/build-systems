@@ -18,15 +18,13 @@ module Build (
 
 import Control.Monad.State
 import qualified Data.Dependent.Map as DMap
-import Data.Dependent.Sum (DSum(..))
 import Data.GADT.Compare
-import Data.Maybe (fromMaybe)
 import Control.Monad (forM_)
-import Data.Kind (Type)
 import Control.Monad.Identity
-import Data.Type.Equality
 import qualified Data.Map as Map
 import Data.List (sortBy)
+import Data.Functor.Classes
+import Data.GADT.Show
 
 -- | Abstracting over the rule match type
 data RuleResult r k o = RuleResult { getRuleResult :: k o -> Build r k o }
@@ -57,13 +55,13 @@ findRule keyToMatch key = do
     return $ fmap getRuleResult (DMap.lookup (keyToMatch key) (rules st))
 
 -- | Check if a result exists and execute the rule if needed
-build :: (GCompare k, GCompare r) => (k a -> String) -> (forall o. k o -> r o) -> k a -> Build r k (Maybe a)
-build keyToString keyToMatch key = do
+build :: (GCompare k, GCompare r, GShow k) => (forall o. k o -> r o) -> k a -> Build r k (Maybe a)
+build keyToMatch key = do
     st <- get
     case DMap.lookup key (results st) of
         Just (Identity res) -> do
             -- Increment access counter for this key
-            let keyStr = keyToString key
+            let keyStr = gshow key
                 newCount = Map.findWithDefault 0 keyStr (accessCounts st) + 1
             modify $ \s -> s { accessCounts = Map.insert keyStr newCount (accessCounts s) }
             return (Just res)
