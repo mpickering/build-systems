@@ -401,6 +401,6 @@ exampleSpreadsheet = do
 
     return ()
 
-runExampleSpreadsheet :: IO ()
-runExampleSpreadsheet = do
+main :: IO ()
+main = do
     evalBuild exampleSpreadsheet

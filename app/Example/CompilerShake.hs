@@ -3,9 +3,9 @@
 {-# LANGUAGE RankNTypes #-}
 
 -- An example of a build system like shake, with named rules.
-module Example.SimpleShake where
+module Example.CompilerShake where
 
-import Abstract.Simple
+import Abstract.Compiler
 import System.Shake (Build, rule, build, printBuildStats, evalBuild)
 import Data.GADT.Compare
 import Data.Type.Equality

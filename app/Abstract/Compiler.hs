@@ -6,8 +6,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE RankNTypes #-}
 
-module Abstract.Simple where
-
+module Abstract.Compiler where
 
 import Control.Monad.State
 import Data.GADT.Compare
