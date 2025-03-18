@@ -7,14 +7,14 @@ import System.Buck2
 import Abstract.Operations
 
 -- | Dispatch function to handle different key types
-computeValue :: Dependencies Result a -> Key a -> IO (Result a)
-computeValue deps (ModuleKey name) = ResultModule <$> compileModule deps (ModuleKey name)
-computeValue deps ModuleGraphKey = ResultModuleGraph <$> discoverModuleGraph deps ModuleGraphKey
+computeValue :: Key Result a -> IO (Result a)
+computeValue (ModuleKey name deps) = ResultModule <$> compileModule (ModuleKey name deps)
+computeValue ModuleGraphKey = ResultModuleGraph <$> discoverModuleGraph ModuleGraphKey
 
-wrapper :: Operations (BuildAction Key Dependencies) Result (Build Key Dependencies Result)
+wrapper :: Operations (WrappedKey Key) Result (Build (WrappedKey Key) Result)
 wrapper = Operations {
-    fetch = \ba -> build hoistDependencies computeValue ba
-    , fetches = mapM (build hoistDependencies computeValue)
+    fetch = \ba -> build hoistKey computeValue ba
+    , fetches = mapM (build hoistKey computeValue)
     }
 
 -- | Run the SimpleBuildExample with the SimpleShake Build monad
