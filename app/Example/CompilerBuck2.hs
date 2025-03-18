@@ -6,11 +6,6 @@ import Abstract.CompilerIO
 import System.Buck2
 import Abstract.Operations
 
--- | Define how to build each type of key
---computeValue :: Key a -> Build _ _
---computeValue (ModuleKey name) =  compileModule wrapper (ModuleKey name)
---computeValue ModuleGraphKey = discoverModuleGraph wrapper ModuleGraphKey
-
 -- | Dispatch function to handle different key types
 computeValue :: Dependencies Result a -> Key a -> IO (Result a)
 computeValue deps (ModuleKey name) = ResultModule <$> compileModule deps (ModuleKey name)

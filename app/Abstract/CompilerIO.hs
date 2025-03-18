@@ -13,14 +13,11 @@ module Abstract.CompilerIO where
 
 import Control.Monad.State
 import Data.GADT.Compare
-import Control.Monad (forM_)
 import qualified Data.Map as Map
 import Data.Type.Equality
 import Data.GADT.Show
 import Control.Concurrent (threadDelay)
 import Abstract.Operations
-import Control.Monad.Identity
-import Data.Functor.Compose
 import System.Buck2
 
 type ModuleName = String
