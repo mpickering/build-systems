@@ -1,0 +1,349 @@
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE DefaultSignatures #-}
+{-# LANGUAGE TypeOperators #-}
+
+module System.SimpleShakeExternal (
+    -- * Orchestrator functions
+    orchestrateBuild,
+    OrchestratorConfig(..),
+    defaultOrchestratorConfig,
+
+    -- * Builder functions
+    runBuilder,
+    BuilderConfig(..),
+    defaultBuilderConfig,
+
+    -- * Protocol types
+    BuilderMessage(..),
+    OrchestratorMessage(..),
+    BuilderState(..),
+
+    -- * Serialization
+    SerializeKey(..),
+    SerializeValue(..)
+) where
+
+import Control.Monad.State
+import Control.Monad.Identity
+import qualified Data.Dependent.Map as DMap
+import Data.GADT.Compare
+import Data.GADT.Show
+import qualified Data.Map as Map
+import qualified Data.Set as Set
+import Data.List (sortBy)
+import Control.Monad (forM_, when, void)
+import System.IO
+import System.Process
+import System.Exit
+import Control.Exception (try, SomeException)
+import qualified Data.ByteString.Lazy as BL
+import qualified Data.ByteString.Lazy.Char8 as BLC
+import Data.Aeson (ToJSON, FromJSON, encode, decode, (.=), (.:), object)
+import qualified Data.Aeson as Aeson
+import System.FilePath ((</>))
+import System.Directory (createDirectoryIfMissing)
+import Data.Functor.Const
+import Control.Monad
+import Data.Dependent.Sum
+import Data.Functor.Compose
+
+-- | Protocol messages from builder to orchestrator
+data BuilderMessage k where
+    -- | Builder needs the value for another key
+    NeedKey :: k a -> BuilderMessage k
+    -- | Builder has completed with a result
+    BuildResult :: k a -> String -> BuilderMessage k
+    -- | Builder encountered an error
+    BuildError :: String -> BuilderMessage k
+
+-- | Protocol messages from orchestrator to builder
+data OrchestratorMessage k where
+    -- | Orchestrator provides a value for a requested key
+    KeyValue :: k a -> String -> OrchestratorMessage k
+    -- | Orchestrator signals builder to start building a key
+    BuildKey :: k a -> OrchestratorMessage k
+
+-- | State of a builder process
+data BuilderState =
+    Running ProcessHandle |
+    Suspended ProcessHandle (FilePath, Handle) |
+    Completed ExitCode
+
+-- | Configuration for the orchestrator
+data OrchestratorConfig = OrchestratorConfig
+    { orchestratorBuilderPath :: FilePath   -- ^ Path to the builder executable
+    , orchestratorLogDir :: FilePath        -- ^ Directory for build logs
+    , orchestratorVerbose :: Bool           -- ^ Whether to print verbose logs
+    }
+
+-- | Default orchestrator configuration
+defaultOrchestratorConfig :: OrchestratorConfig
+defaultOrchestratorConfig = OrchestratorConfig
+    { orchestratorBuilderPath = "builder"
+    , orchestratorLogDir = ".build/logs"
+    , orchestratorVerbose = False
+    }
+
+-- | Configuration for the builder
+data BuilderConfig = BuilderConfig
+    { builderVerbose :: Bool  -- ^ Whether to print verbose logs
+    }
+
+-- | Default builder configuration
+defaultBuilderConfig :: BuilderConfig
+defaultBuilderConfig = BuilderConfig
+    { builderVerbose = False
+    }
+
+-- | Type class for serializing/deserializing keys
+class (GCompare k, GShow k) => SerializeKey k where
+    serializeKey :: k a -> String
+    deserializeKey :: String -> Maybe (Some k)
+
+    -- | Default implementation based on GShow
+    default serializeKey :: k a -> String
+    serializeKey = gshow
+
+data Some k where
+    Some :: k a -> Some k
+
+-- | Type class for serializing/deserializing values
+class SerializeValue k where
+    serializeValue :: k a -> a -> String
+    deserializeValue :: k a -> String -> Maybe a
+
+-- | Orchestrate a build with external processes
+orchestrateBuild :: (SerializeKey k, SerializeValue k)
+                 => OrchestratorConfig
+                 -> (forall a. k a -> IO a) -- ^ The rule to build a key
+                 -> k a                     -- ^ The key to build
+                 -> IO a
+orchestrateBuild config buildRule rootKey = do
+    -- Create log directory
+    createDirectoryIfMissing True (orchestratorLogDir config)
+
+    -- Initialize state
+    let initialState = OrchestratorState
+            { oscResults = DMap.empty
+            , oscPendingBuilders = DMap.empty
+            , oscBuiltKeys = Set.empty
+            , oscWaitingKeys = DMap.empty
+            }
+
+    -- Run the orchestrator
+    result <- evalStateT (runOrchestrator config buildRule rootKey) initialState
+
+    -- Return the final result
+    return result
+
+
+
+-- | Internal state of the orchestrator
+data OrchestratorState k = OrchestratorState
+    { oscResults :: DMap.DMap k Identity       -- ^ Cache of computed results
+    , oscPendingBuilders :: DMap.DMap k (Const BuilderState)  -- ^ Map of running builders
+    , oscBuiltKeys :: Set.Set String           -- ^ Set of keys that have been built
+    , oscWaitingKeys :: DMap.DMap k (Compose [] k) -- ^ Map of keys waiting for other keys
+    }
+
+-- | Run the orchestrator
+runOrchestrator :: forall k a . (SerializeKey k, SerializeValue k)
+                => OrchestratorConfig
+                -> (forall a. k a -> IO a)  -- ^ The rule to build a key
+                -> k a                      -- ^ The key to build
+                -> StateT (OrchestratorState k) IO a
+runOrchestrator config buildRule rootKey = do
+    -- Launch a builder for the root key
+    launchBuilder config rootKey
+
+    -- Process events until the root key is built
+    processEvents config buildRule
+
+    -- Get the result for the root key
+    result <- getResult rootKey
+    return result
+  where
+    -- Process events until the root key is built
+    processEvents :: (SerializeKey k, SerializeValue k)
+                  => OrchestratorConfig
+                  -> (forall a. k a -> IO a)
+                  -> StateT (OrchestratorState k) IO ()
+    processEvents config buildRule = do
+        -- Check if the root key has been built
+        rootBuilt <- isKeyBuilt rootKey
+        unless rootBuilt $ do
+            -- Process one event
+            processOneEvent config buildRule
+            -- Recurse
+            processEvents config buildRule
+
+    -- Process one event from a builder
+    processOneEvent :: (SerializeKey k, SerializeValue k)
+                    => OrchestratorConfig
+                    -> (forall a. k a -> IO a)
+                    -> StateT (OrchestratorState k) IO ()
+    processOneEvent config buildRule = do
+        -- Get all pending builders
+        pending <- gets oscPendingBuilders
+
+        -- Check for finished builders
+        checkFinishedBuilders
+
+        -- If we have pending builders, check for messages
+        unless (DMap.null pending) $ do
+            -- Get a builder to check
+            let (builderId :=> state) = head (DMap.toList pending)
+
+            -- Check for messages based on state
+            case state of
+                Running ph -> do
+                    -- Check if it has written a message
+                    checkBuilderMessage builderId ph
+
+                Suspended ph (commFile, h) -> do
+                    -- Check if all dependencies are satisfied
+                    satisfied <- areDependenciesSatisfied builderId
+                    when satisfied $ do
+                        -- Resume the builder
+                        resumeBuilder builderId ph commFile h
+
+                Completed _ ->
+                    -- This builder is already done
+                    return ()
+
+    -- Check for finished builders
+    checkFinishedBuilders :: StateT (OrchestratorState k) IO ()
+    checkFinishedBuilders = do
+        pending <- gets oscPendingBuilders
+        forM_ (DMap.toList pending) $ \(builderId, (state, _)) ->
+            case state of
+                Running ph -> checkIfFinished builderId ph
+                Suspended ph _ -> checkIfFinished builderId ph
+                Completed _ -> return ()
+
+    -- Check if a builder process has finished
+    checkIfFinished :: String -> ProcessHandle -> StateT (OrchestratorState k) IO ()
+    checkIfFinished builderId ph = do
+        exitCode <- liftIO $ getProcessExitCode ph
+        case exitCode of
+            Just code -> do
+                -- Update the builder state to completed
+                modify $ \s -> s { oscPendingBuilders =
+                    Map.adjust (\(_, k) -> (Completed code, k)) builderId (oscPendingBuilders s) }
+
+                -- Log completion
+                when (orchestratorVerbose config) $
+                    liftIO $ putStrLn $ "Builder " ++ builderId ++ " completed with exit code " ++ show code
+
+            Nothing -> return ()
+
+    -- Check if a builder has written a message
+    checkBuilderMessage :: SerializeKey k
+                        => k a
+                        -> ProcessHandle
+                        -> StateT (OrchestratorState k) IO ()
+    checkBuilderMessage builderId ph = do
+        -- TODO: Implement reading from the builder's stdout
+
+        -- For now, simulate a message
+        return ()
+
+    -- Check if all dependencies for a suspended builder are satisfied
+    areDependenciesSatisfied :: k a -> StateT (OrchestratorState k) IO Bool
+    areDependenciesSatisfied builderId = do
+        waiting <- gets oscWaitingKeys
+        case Map.lookup builderId waiting of
+            Just deps -> do
+                built <- gets oscBuiltKeys
+                return $ all (`Set.member` built) deps
+            Nothing -> return True
+
+    -- Resume a suspended builder
+    resumeBuilder :: String
+                  -> ProcessHandle
+                  -> FilePath
+                  -> Handle
+                  -> StateT (OrchestratorState k) IO ()
+    resumeBuilder builderId ph commFile h = do
+        -- TODO: Implement sending values to the builder and resuming it
+
+        -- Update state to Running
+        modify $ \s -> s { oscPendingBuilders =
+            Map.adjust (\(_, k) -> (Running ph, k)) builderId (oscPendingBuilders s) }
+
+    -- Launch a builder for a key
+    launchBuilder :: SerializeKey k => OrchestratorConfig -> k a -> StateT (OrchestratorState k) IO ()
+    launchBuilder config key = do
+        -- Generate a unique builder ID
+        let builderId = "builder-" ++ serializeKey key
+
+        -- Create a log file for this builder
+        let logFile = orchestratorLogDir config </> (builderId ++ ".log")
+
+        -- Launch the builder process
+        when (orchestratorVerbose config) $
+            liftIO $ putStrLn $ "Launching builder for key: " ++ serializeKey key
+
+        -- TODO: Implement process launching with the builder executable
+        -- For now, stub implementation
+
+        -- Update the state with the new builder
+        modify $ \s -> s { oscPendingBuilders =
+            Map.insert builderId (Running undefined, key) (oscPendingBuilders s) }
+
+    -- Check if a key has been built
+    isKeyBuilt :: SerializeKey k => k a -> StateT (OrchestratorState k) IO Bool
+    isKeyBuilt key = do
+        built <- gets oscBuiltKeys
+        return $ Set.member (serializeKey key) built
+
+    -- Get a result for a key
+    getResult :: SerializeKey k => k a -> StateT (OrchestratorState k) IO a
+    getResult key = do
+        results <- gets oscResults
+        case DMap.lookup key results of
+            Just (Identity result) -> return result
+            Nothing -> error $ "Key not found in results: " ++ serializeKey key
+
+-- | Run a builder process that builds a single key
+runBuilder :: (SerializeKey k, SerializeValue k)
+           => BuilderConfig
+           -> (forall a. k a -> IO a)  -- ^ The rule to build a key
+           -> IO ()
+runBuilder config buildRule = do
+    -- Read the key to build from stdin
+    keyStr <- getLine
+    case deserializeKey keyStr of
+        Just (Some key) -> do
+            -- Build the key
+            result <- buildKeyWithSuspension config buildRule key
+
+            -- Write the result to stdout
+            putStrLn $ serializeValue key result
+
+            -- Exit successfully
+            exitSuccess
+
+        Nothing -> do
+            -- Invalid key
+            putStrLn $ "Error: Invalid key: " ++ keyStr
+            exitFailure
+
+-- | Build a key with the ability to suspend and resume when dependencies are needed
+buildKeyWithSuspension :: (SerializeKey k, SerializeValue k)
+                       => BuilderConfig
+                       -> (forall a. k a -> IO a)
+                       -> k a
+                       -> IO a
+buildKeyWithSuspension config buildRule key = do
+    -- TODO: Implement the build logic with suspension capabilities
+
+    -- For now, just directly call the build rule
+    buildRule key

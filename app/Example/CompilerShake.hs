@@ -10,6 +10,7 @@ import System.Shake (Build, rule, build, printBuildStats, evalBuild)
 import Data.GADT.Compare
 import Data.Type.Equality
 import Abstract.Operations
+import Control.Monad.Identity
 
 data RuleMatch o where
     MatchModule :: RuleMatch FilePath
@@ -49,11 +50,11 @@ runExampleBuild = evalBuild $ do
         , fetches = mapM buildWrapper
       }
 
-    buildWrapper :: forall a. Key a -> Build RuleMatch Key a
+    buildWrapper :: forall a. Key a -> Build RuleMatch Key (Identity a)
     buildWrapper k = do
       result <- build keyToMatch k
       case result of
-        Just a -> return a
+        Just a -> return (Identity a)
         Nothing -> error $ "Failed to build key: " ++ keyToString k
 
 -- Optionally add a main function for testing

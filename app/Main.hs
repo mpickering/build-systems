@@ -9,6 +9,7 @@ import qualified Example.CompilerShake as CompilerShake
 import qualified Example.CompilerSimpleShake as CompilerSimpleShake
 import qualified Example.Spreadsheet as Spreadsheet
 import qualified Example.CompilerSimpleShakePar as CompilerSimpleShakePar
+import qualified Example.CompilerBuck2 as CompilerBuck2
 
 -- Map of available examples
 examples :: Map.Map String (IO ())
@@ -17,6 +18,7 @@ examples = Map.fromList
   , ("compiler-simple-shake", CompilerSimpleShake.main)
   , ("spreadsheet", Spreadsheet.main)
   , ("compiler-simpleshake-par", CompilerSimpleShakePar.main)
+  , ("compiler-buck2", CompilerBuck2.main)
   ]
 
 -- Display usage information

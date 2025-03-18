@@ -288,9 +288,9 @@ printBuildStats = do
     sortByKey = sortBy (\k1 k2 -> compare k1 k2)
 
 -- | Evaluate a build action with parallel execution
-evalBuildWithThreads :: forall k a .(GShow k, GCompare k) => Int
-                     -> (forall z . Operations k (Build k) -> k z -> Build k z)
-                     -> (Operations k (Build k) -> Build k a)
+evalBuildWithThreads :: forall k r a .(GShow k, GCompare k) => Int
+                     -> (forall z . Operations k Identity (Build k) -> k z -> Build k z)
+                     -> (Operations k Identity (Build k) -> Build k a)
                      -> IO a
 evalBuildWithThreads numThreads compute_func buildAction = do
         -- Create task queue
@@ -306,8 +306,8 @@ evalBuildWithThreads numThreads compute_func buildAction = do
         terminateVar <- newEmptyTMVarIO
 
         let queueOps = Operations {
-                        fetch = build taskQueue
-                      , fetches = buildMany taskQueue
+                        fetch = fmap Identity . build taskQueue
+                      , fetches = fmap (map Identity) . buildMany taskQueue
                       }
         let compute :: forall z . k z -> Build k z
             compute = compute_func queueOps

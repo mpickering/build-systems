@@ -17,6 +17,7 @@ import Data.Type.Equality
 import Data.GADT.Show
 import Control.Concurrent (threadDelay)
 import Abstract.Operations
+import Control.Monad.Identity
 
 type ModuleName = String
 
@@ -63,9 +64,9 @@ data Module = Module
     } deriving (Show, Eq)
 
 -- | Simulating a module compilation process
-compileModule :: (MonadIO m, Monad m) => Operations Key m -> Key String -> m String
+compileModule :: (MonadIO m, Monad m) => Operations Key Identity m -> Key String -> m String
 compileModule Operations{fetch, fetches} (ModuleKey name) = do
-    modules <- fetch ModuleGraphKey
+    Identity modules <- fetch ModuleGraphKey
     case lookup name [(moduleName m, m) | m <- modules] of
         Just ms -> do
             let keys = map ModuleKey (dependencies ms)
@@ -75,7 +76,7 @@ compileModule Operations{fetch, fetches} (ModuleKey name) = do
         Nothing -> error $ "Module " ++ name ++ " not found"
 
 -- | Rule for computing the module graph
-discoverModuleGraph :: (Monad m) => Operations Key m -> Key [Module] -> m [Module]
+discoverModuleGraph :: (Monad m) => Operations Key Identity m -> Key [Module] -> m [Module]
 discoverModuleGraph _ _ = do
     let modules = [ Module "A" [] "print(\"Hello from A\")"
                   , Module "B" ["A"] "print(\"Hello from B\")"
@@ -91,7 +92,7 @@ discoverModuleGraph _ _ = do
     return modules
 
 -- | Print the module dependency tree
-printModuleTree :: (Monad m, MonadIO m) => Operations Key m -> [Module] -> m ()
+printModuleTree :: (Monad m, MonadIO m) => Operations Key Identity m -> [Module] -> m ()
 printModuleTree ops modules = do
     liftIO $ putStrLn "Module Dependency Tree:"
     -- Find the root modules (those that have no dependents)
@@ -100,7 +101,7 @@ printModuleTree ops modules = do
         printModuleNode ops root modules 0
 
 -- | Print a single module node and its dependencies recursively
-printModuleNode :: (Monad m, MonadIO m) => Operations Key m -> Module -> [Module] -> Int -> m ()
+printModuleNode :: (Monad m, MonadIO m) => Operations Key Identity m -> Module -> [Module] -> Int -> m ()
 printModuleNode ops m allModules depth = do
     -- Print the current module with proper indentation
     liftIO $ putStrLn $ replicate (depth * 2) ' ' ++ "- " ++ moduleName m
@@ -112,10 +113,10 @@ printModuleNode ops m allModules depth = do
 
 -- | Example: Compiling a small program with dynamic dependencies
 exampleBuild :: (Monad m, MonadIO m)
-             => Operations Key m
+             => Operations Key Identity m
              -> m ()
 exampleBuild ops@Operations{..} = do
-    modules <- fetch ModuleGraphKey
+    Identity modules <- fetch ModuleGraphKey
     -- Print the module dependency tree
     printModuleTree ops modules
     -- Compile all modules

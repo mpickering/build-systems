@@ -9,9 +9,10 @@ module Example.CompilerSimpleShakePar (main) where
 import Abstract.Compiler
 import System.SimpleShakePar
 import Abstract.Operations
+import Control.Monad.Identity
 
 -- | Define how to build each type of key
-computeValue :: Operations Key (Build Key) -> Key a -> Build Key a
+computeValue :: Operations Key Identity (Build Key) -> Key a -> Build Key a
 computeValue compute (ModuleKey name) = compileModule compute (ModuleKey name)
 computeValue compute ModuleGraphKey = discoverModuleGraph compute ModuleGraphKey
 

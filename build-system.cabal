@@ -24,14 +24,20 @@ executable build-system
                      , stm
                      , async
                      , time
+                     , process
+                     , bytestring
+                     , aeson
     other-modules:    System.SimpleShake
                      , System.SimpleShakePar
                      , System.Shake
+                     , System.Buck2
                      , Example.CompilerSimpleShake
                      , Example.CompilerSimpleShakePar
                      , Example.CompilerShake
+                     , Example.CompilerBuck2
                      , Example.Spreadsheet
                      , Abstract.Compiler
+                     , Abstract.CompilerIO
                      , Abstract.Operations
     hs-source-dirs:   app
     default-language: Haskell2010

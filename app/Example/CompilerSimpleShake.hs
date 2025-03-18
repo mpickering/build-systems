@@ -7,16 +7,17 @@ module Example.CompilerSimpleShake where
 import Abstract.Compiler
 import System.SimpleShake (Build, build, printBuildStats, evalBuild)
 import Abstract.Operations
+import Control.Monad.Identity
 
 -- | Define how to build each type of key
 computeValue :: Key a -> Build Key a
-computeValue (ModuleKey name) = compileModule wrapper (ModuleKey name)
+computeValue (ModuleKey name) =  compileModule wrapper (ModuleKey name)
 computeValue ModuleGraphKey = discoverModuleGraph wrapper ModuleGraphKey
 
-wrapper :: Operations Key (Build Key)
+wrapper :: Operations Key Identity (Build Key)
 wrapper = Operations {
-    fetch = build computeValue
-    , fetches = mapM (build computeValue)
+    fetch = \x ->fmap Identity (build computeValue x)
+    , fetches = mapM (fmap Identity . build computeValue)
 }
 
 -- | Run the SimpleBuildExample with the SimpleShake Build monad
