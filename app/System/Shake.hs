@@ -5,7 +5,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Build (
+module System.Shake (
     Build(..),
     BuildState(..),
     RuleResult(..),
@@ -23,7 +23,6 @@ import Control.Monad (forM_)
 import Control.Monad.Identity
 import qualified Data.Map as Map
 import Data.List (sortBy)
-import Data.Functor.Classes
 import Data.GADT.Show
 
 -- | Abstracting over the rule match type

@@ -4,8 +4,8 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-
-module SpreadsheetExample where
+{-# LANGUAGE TypeApplications #-}
+module Example.Spreadsheet where
 
 import Control.Monad.State
 import Data.GADT.Compare
@@ -13,8 +13,7 @@ import Control.Monad (forM_)
 import Data.Type.Equality
 import qualified Data.Map as Map
 import Data.Char (isDigit)
-import Build (Build(..), rule, build, printBuildStats)
-import Data.Functor.Classes
+import System.Shake
 
 import Data.GADT.Show
 
@@ -329,7 +328,7 @@ trim = dropWhile (== ' ') . reverse . dropWhile (== ' ') . reverse
 -- | Format a numeric value to fit in a cell
 formatValue :: CellValue -> String
 formatValue (NumericValue n)
-    | n == fromIntegral (round n) =
+    | n == fromIntegral @Int (round n) =
         let str = show (round n :: Int)
         in padString 5 str
     | otherwise =
@@ -401,3 +400,7 @@ exampleSpreadsheet = do
     printBuildStats
 
     return ()
+
+runExampleSpreadsheet :: IO ()
+runExampleSpreadsheet = do
+    evalBuild exampleSpreadsheet

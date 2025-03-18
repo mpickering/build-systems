@@ -6,15 +6,13 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE RankNTypes #-}
 
-module SimpleBuildExample where
+module Abstract.Simple where
+
 
 import Control.Monad.State
-import qualified Data.Dependent.Map as DMap
 import Data.GADT.Compare
 import Control.Monad (forM_)
 import Data.Type.Equality
-import qualified Data.Map as Map
-import Data.Functor.Classes
 import Data.GADT.Show
 
 type ModuleName = String
@@ -28,7 +26,7 @@ data Key a where
 instance GShow Key where
     gshowsPrec p (ModuleKey name) = showParen (p > 10) $
         showString "ModuleKey " . showsPrec 11 name
-    gshowsPrec p ModuleGraphKey = showString "ModuleGraphKey"
+    gshowsPrec _ ModuleGraphKey = showString "ModuleGraphKey"
 
 
 instance GEq Key where
@@ -48,25 +46,6 @@ instance GCompare Key where
     gcompare _ ModuleGraphKey = GGT
 
 -- | Rule matching criteria
-data RuleMatch o where
-    MatchModule :: RuleMatch FilePath
-    MatchModuleGraph :: RuleMatch [Module]
-
-instance GEq RuleMatch where
-    geq MatchModule MatchModule = Just Refl
-    geq MatchModuleGraph MatchModuleGraph = Just Refl
-    geq _ _ = Nothing
-
-instance GCompare RuleMatch where
-    gcompare MatchModule MatchModule = GEQ
-    gcompare MatchModuleGraph MatchModuleGraph = GEQ
-    gcompare MatchModule MatchModuleGraph = GLT
-    gcompare MatchModuleGraph MatchModule = GGT
-
--- | Map a Key to its corresponding RuleMatch
-keyToMatch :: Key a -> RuleMatch a
-keyToMatch (ModuleKey _) = MatchModule
-keyToMatch ModuleGraphKey = MatchModuleGraph
 
 -- | Convert a key to its string representation for stats tracking
 keyToString :: Key a -> String
@@ -120,34 +99,21 @@ printModuleNode :: (Monad m, MonadIO m) => (forall x. Key x -> m x) -> Module ->
 printModuleNode _ m allModules depth = do
     -- Print the current module with proper indentation
     liftIO $ putStrLn $ replicate (depth * 2) ' ' ++ "- " ++ moduleName m
-
     -- Print each dependency
     forM_ (dependencies m) $ \depName -> do
-        case lookup depName [(moduleName m, m) | m <- allModules] of
+        case lookup depName [(moduleName m', m') | m' <- allModules] of
             Just depMod -> printModuleNode (error "Not used") depMod allModules (depth + 1)
             Nothing -> liftIO $ putStrLn $ replicate ((depth + 1) * 2) ' ' ++ "- " ++ depName ++ " (missing)"
 
 -- | Example: Compiling a small program with dynamic dependencies
 exampleBuild :: (Monad m, MonadIO m)
-             => (forall x. RuleMatch x -> (Key x -> m x) -> m ())  -- Rule registration function
-             -> (forall x. Key x -> m x)                          -- Build function
-             -> (m ())                                            -- Stats printer
+             => (forall x. Key x -> m x)  -- Build function
              -> m ()
-exampleBuild registerRule build printStats = do
-    registerRule MatchModuleGraph (discoverModuleGraph build)
-    registerRule MatchModule (compileModule build) -- Parameterized rule for compiling any module
-
+exampleBuild build = do
     modules <- build ModuleGraphKey
-
     -- Print the module dependency tree
     printModuleTree build modules
-
     -- Compile all modules
     forM_ modules $ \ms -> do
         _ <- build (ModuleKey (moduleName ms))
         return ()
-
-    -- Print build statistics
-    printStats
-
-    return ()

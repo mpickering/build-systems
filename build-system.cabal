@@ -14,6 +14,10 @@ executable build-system
     import:           warnings
     main-is:          Main.hs
     build-depends:    base >=4.20.0.0, dependent-map, some, dependent-sum, mtl, containers,
-    other-modules:    SimpleBuildExample, SpreadsheetExample, Build, RunBuildExample
+    other-modules:  Abstract.Simple
+                    Example.SimpleShake
+                    Example.Spreadsheet
+                    System.Shake
     hs-source-dirs:   app
     default-language: Haskell2010
+    ghc-options:     -Wno-x-partial
