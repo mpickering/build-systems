@@ -12,12 +12,12 @@ import qualified Example.CompilerSimpleShakePar as CompilerSimpleShakePar
 import qualified Example.CompilerBuck2 as CompilerBuck2
 
 -- Map of available examples
-examples :: Map.Map String (IO ())
+examples :: Map.Map String ([String] -> IO ())
 examples = Map.fromList
-  [ ("compiler-shake", CompilerShake.main)
-  , ("compiler-simple-shake", CompilerSimpleShake.main)
-  , ("spreadsheet", Spreadsheet.main)
-  , ("compiler-simpleshake-par", CompilerSimpleShakePar.main)
+  [ ("compiler-shake", const (CompilerShake.main))
+  , ("compiler-simple-shake", const (CompilerSimpleShake.main))
+  , ("spreadsheet", const (Spreadsheet.main))
+  , ("compiler-simpleshake-par", const (CompilerSimpleShakePar.main))
   , ("compiler-buck2", CompilerBuck2.main)
   ]
 
@@ -39,12 +39,12 @@ main = do
       hPutStrLn stderr "No example specified."
       usage
 
-    (exampleName:_) -> do
+    (exampleName:args) -> do
       -- Look up the example in the map
       case Map.lookup exampleName examples of
         Just runExample -> do
-          putStrLn $ "Running example: " ++ exampleName
-          runExample
+          hPutStrLn stderr $ "Running example: " ++ exampleName
+          runExample args
 
         Nothing -> do
           hPutStrLn stderr $ "Unknown example: " ++ exampleName

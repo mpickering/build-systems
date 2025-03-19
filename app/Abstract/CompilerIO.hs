@@ -9,6 +9,8 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE TypeData #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ApplicativeDo #-}
 module Abstract.CompilerIO where
 
 import Control.Monad.State
@@ -19,6 +21,14 @@ import Data.GADT.Show
 import Control.Concurrent (threadDelay)
 import Abstract.Operations
 import System.Buck2
+import Data.Aeson (ToJSON(..), FromJSON(..), object, (.=), withObject, (.:))
+import Data.HFunctor.HTraversable
+import Data.HFunctor
+import Data.Functor.Identity
+import Data.Some
+
+import Data.Singletons
+import System.IO (hPutStrLn, stderr)
 
 type ModuleName = String
 
@@ -26,20 +36,108 @@ type ModuleInterface = String
 
 type data Rules = ModuleGraphRule | ModuleRule
 
+data SRules (r :: Rules) where
+    SModuleGraphRule :: SRules ModuleGraphRule
+    SModuleRule      :: SRules ModuleRule
+
+type instance Sing = SRules
+
+instance SingI ModuleGraphRule where
+  sing = SModuleGraphRule
+
+instance SingI ModuleRule where
+  sing = SModuleRule
+
+
+
+
 -- NB: In this example, all dependencies are in the key.
 -- Similar to the content-addressed build system.
 data Key k a where
     ModuleKey :: ModuleName -> [k ModuleRule] -> Key k ModuleRule
     ModuleGraphKey :: Key k ModuleGraphRule -- Rule type for computing the module graph
 
+instance HTraversable Key where
+  htraverse = hoistKey
+
+instance HFunctor Key where
+  hmap f  = runIdentity . htraverse (Identity . f)
+
+-- | GToJSON instance for Key to enable JSON serialization
+instance (GToJSON k) => GToJSON (Key k) where
+  gToJSON (ModuleKey name deps) =
+    object [ "name" .= name
+           , "deps" .= map gToJSON deps
+           ]
+  gToJSON ModuleGraphKey =
+    object [ "type" .= ("moduleGraph" :: String) ]
+
+  gToJSONTagged k@(ModuleKey {}) =
+    ("moduleKey", gToJSON k)
+  gToJSONTagged k@ModuleGraphKey =
+    ("moduleGraph", gToJSON k)
+
+-- | GFromJSON instance for Key to enable JSON deserialization
+instance (GFromJSON k) => GFromJSON (Key k) where
+  gParseJSON "moduleKey" = withObject "ModuleKey" $ \obj -> do
+    name <- obj .: "name"
+    depValues <- obj .: "deps"
+    deps <- traverse (gParseKnownJSON SModuleRule) depValues
+    return (Some (ModuleKey name deps))
+  gParseJSON "moduleGraph" = \_ ->
+    return (Some ModuleGraphKey)
+  gParseJSON tag = \_ ->
+    fail $ "Unknown tag: " ++ show tag
+
+  gParseKnownJSON sing_tag =
+    case sing_tag of
+      SModuleGraphRule -> \_ -> return ModuleGraphKey
+      SModuleRule -> withObject "Key" $ \obj -> do
+        name <- obj .: "name"
+        depValues <- obj .: "deps"
+        deps <- traverse (gParseKnownJSON SModuleRule) depValues
+        return (ModuleKey name deps)
+
+-- | GToJSON instance for Result to enable JSON serialization
+instance GToJSON Result where
+  gToJSON (ResultModule interface) =
+    object [ "interface" .= interface ]
+  gToJSON (ResultModuleGraph modules) =
+    object [ "modules" .= modules ]
+
+  gToJSONTagged r@(ResultModule _) =
+    ("moduleResult", gToJSON r)
+  gToJSONTagged r@(ResultModuleGraph _) =
+    ("moduleGraphResult", gToJSON r)
+
+-- | GFromJSON instance for Result to enable JSON deserialization
+instance GFromJSON Result where
+  gParseJSON "moduleResult" = withObject "ResultModule" $ \obj -> do
+    interface <- obj .: "interface"
+    return (Some (ResultModule interface))
+  gParseJSON "moduleGraphResult" = withObject "ResultModuleGraph" $ \obj -> do
+    modules <- obj .: "modules"
+    return (Some (ResultModuleGraph modules))
+  gParseJSON tag = \_ ->
+    fail $ "Unknown result tag: " ++ show tag
+
+  gParseKnownJSON sing_tag =
+    case sing_tag of
+      SModuleRule -> withObject "ResultModule" $ \obj -> do
+        interface <- obj .: "interface"
+        return (ResultModule interface)
+      SModuleGraphRule -> withObject "ResultModuleGraph" $ \obj -> do
+        modules <- obj .: "modules"
+        return (ResultModuleGraph modules)
+
 
 
 -- | Lift a transformation of keys to a transformation of dependencies
-hoistKey :: Monad m => (forall b. k b -> m (k' b)) -> Key k a -> m (Key k' a)
+hoistKey :: Applicative m => (forall b. k b -> m (k' b)) -> Key k a -> m (Key k' a)
 hoistKey f (ModuleKey name ks) = do
   ks' <- traverse f ks
   return (ModuleKey name ks')
-hoistKey _ ModuleGraphKey = return ModuleGraphKey
+hoistKey _ ModuleGraphKey = pure ModuleGraphKey
 
 
 data Result a where
@@ -98,11 +196,26 @@ data Module = Module
     , sourceCode :: String
     } deriving (Show, Eq)
 
+-- | JSON instances for Module
+instance ToJSON Module where
+    toJSON Module{..} = object
+        [ "moduleName" .= moduleName
+        , "dependencies" .= dependencies
+        , "sourceCode" .= sourceCode
+        ]
+
+instance FromJSON Module where
+    parseJSON = withObject "Module" $ \v -> Module
+        <$> v .: "moduleName"
+        <*> v .: "dependencies"
+        <*> v .: "sourceCode"
+
+
 -- | Simulating a module compilation process
 compileModule :: (MonadIO m, Monad m) =>
   Key Result ModuleRule -> m ModuleInterface
 compileModule (ModuleKey name modules) = do
-        liftIO $ putStrLn ("Provisioning: " ++ show modules)
+        liftIO $ hPutStrLn stderr ("Provisioning: " ++ show modules)
         liftIO $ threadDelay 100_000
         return $ "Compiled: " ++ name
 
@@ -139,3 +252,4 @@ mkBuildActions ms = Map.elems res
   where
     res = Map.fromList [(moduleName m, WrappedKey (ModuleKey (moduleName m) (map ((Map.!) res) (dependencies m))))
                        | m <- ms]
+

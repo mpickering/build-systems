@@ -6,18 +6,26 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeApplications #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
 
 module System.Buck2 (
     Build,
     BuildState(..),
     build,
+    mkExternalExecutor,
     WrappedKey(..),
     printBuildStats,
     evalBuild,
     -- New exports for debugging
     setVerbosity,
     getVerbosity,
-    Verbosity(..)
+    Verbosity(..),
+
+    GToJSON(..),
+    GFromJSON(..),
+    ExternalExecutor(..)
 ) where
 
 import Control.Monad.State
@@ -28,8 +36,40 @@ import qualified Data.Map as Map
 import Data.List (sortBy)
 import Control.Monad (forM_, when)
 import Data.Type.Equality
+import Data.HFunctor.HTraversable
+import Data.Aeson (FromJSON(..), ToJSON(..), object, (.=), withObject, Value, (.:), encode, decode)
+import Data.Text (Text)
+import Data.Some
+import Data.Aeson.Types (Parser)
+import System.Process (readProcess)
+import System.Exit (ExitCode(..), exitWith)
+import qualified Data.ByteString.Lazy.Char8 as BSL8
+import Data.Singletons
+import Unsafe.Coerce (unsafeCoerce)
+import System.IO (hPutStrLn, stderr)
 
--- | Verbosity level for build tracing
+class GFromJSON f where
+  gParseJSON :: Text -> Value -> Parser (Some f)
+  gParseKnownJSON :: Sing a -> Value -> Parser (f a)
+
+instance (GFromJSON f) => FromJSON (Some f) where
+  parseJSON = withObject "Some f" $ \obj -> do
+    tag   <- obj .: "tag"
+    value <- obj .: "value"
+    gParseJSON tag value
+
+-- Class for GADT serialization
+class GToJSON f where
+  gToJSON :: f a -> Value
+  gToJSONTagged :: f a -> (Text, Value)  -- Returns a tag + value
+
+instance (GToJSON f) => ToJSON (Some f) where
+  toJSON (Some x) =
+    let (tag, val) = gToJSONTagged x
+    in object ["tag" .= tag, "value" .= val]
+
+
+
 data Verbosity = Silent | Normal | Verbose | Debug
     deriving (Show, Eq, Ord)
 
@@ -66,6 +106,16 @@ debug minLevel msg key = do
 -- so that we can compare them.
 
 data WrappedKey k a = WrappedKey { unwrapKey :: k (WrappedKey k) a }
+
+-- | ToJSON instance for WrappedKey
+instance (GToJSON (k (WrappedKey k))) => ToJSON (WrappedKey k a) where
+    toJSON key = gToJSON (unwrapKey key)
+
+instance GToJSON (k (WrappedKey k)) => GToJSON (WrappedKey k) where
+    gToJSON (WrappedKey k) = gToJSON k
+
+    gToJSONTagged (WrappedKey k) = gToJSONTagged k
+
 
 -- | GEq instance for WrappedKey
 instance GEq (k (WrappedKey k)) => GEq (WrappedKey k) where
@@ -138,13 +188,11 @@ instance GShow (k (WrappedKey k)) => GShow (WrappedKey k) where
 
 
 -- | Build a value for a key, using the provided function to compute it if needed
-build :: forall k r a . (GCompare (WrappedKey k), GShow (WrappedKey k)) =>
-      -- Evaluate the dependency structure
-      (forall m k1 k2 z . Monad m => (forall b . k1 b -> m (k2 b)) -> k k1 z -> m (k k2 z)) ->
+build :: forall k r a . (GCompare (WrappedKey k), GShow (WrappedKey k), HTraversable k) =>
       -- How to compute values
       (forall z . k r z -> IO (r z))
       -> WrappedKey k a -> Build (WrappedKey k) r (r a)
-build eval_deps compute key = do
+build compute key = do
     debug Verbose "Starting build for" key
     st <- get
     case DMap.lookup key (results st) of
@@ -158,12 +206,45 @@ build eval_deps compute key = do
         Nothing -> do
             debug Normal "Cache miss for" key
             debug Debug "Evaluating dependencies for" key
-            ds' <- eval_deps (build eval_deps compute) (unwrapKey key)
+            ds' <- htraverse (build compute) (unwrapKey key)
             debug Debug "Computing result for" key
             res <- liftIO $ compute ds'
             modify $ \st' -> st' { results = DMap.insert key res (results st') }
             debug Verbose "Completed build for" key
             return res
+
+data ExternalExecutor k r = ExternalExecutor { exe_orchestrator :: forall a . FilePath -> [String] ->  k r a -> IO (r a)
+                                             , exe_executor :: (forall z . k r z -> IO (r z)) -> String -> IO () }
+
+-- | Build a value for a key using an external executable
+mkExternalExecutor :: forall k r . (GToJSON (k r), GFromJSON (k r)
+                                     ,GToJSON r, GFromJSON r, GShow (k r)) =>
+                    ExternalExecutor k r
+mkExternalExecutor =
+    let queryKey :: forall a. FilePath -> [String] -> k r a -> IO (r a)
+        queryKey = \exePath exeArgs key -> do
+          let keyJson = BSL8.unpack $ encode $ toJSON (Some key)
+
+          liftIO $ do
+            output <- readProcess exePath (exeArgs ++ [keyJson]) ""
+            hPutStrLn stderr $ "Output: " ++ output
+            case decode @(Some r) (BSL8.pack output) of
+                Just (Some result) -> do
+                    return (unsafeCoerce result)
+                Nothing -> do
+                    error "Decode failure"
+
+        performBuild :: (forall z . k r z -> IO (r z)) -> String -> IO ()
+        performBuild = \compute keyJson -> do
+                case decode (BSL8.pack keyJson) of
+                  Just ((Some key') :: Some (k r)) -> do
+                    hPutStrLn stderr $ "Building key: " ++ gshow key'
+                    result <- compute key'
+                    BSL8.putStrLn $ encode $ toJSON (Some result)
+                  Nothing -> do
+                    putStrLn "Failed to decode key from JSON"
+                    exitWith (ExitFailure 1)
+  in ExternalExecutor queryKey performBuild
 
 -- | Print build statistics
 printBuildStats :: Build k r ()

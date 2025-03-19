@@ -27,6 +27,9 @@ executable build-system
                      , process
                      , bytestring
                      , aeson
+                     , functor-combinators
+                     , text
+                     , singletons
     other-modules:    System.SimpleShake
                      , System.SimpleShakePar
                      , System.Shake
